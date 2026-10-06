@@ -1,0 +1,258 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 1. Merchant Profile & Global Settings
+model Merchant {
+  id                String       @id @default(cuid())
+  name              String
+  email             String       @unique
+  currency          String       @default("INR")
+  baseMarginPct     Float        @default(30.0) // Default benchmark margin (30%)
+  razorpayKeyId     String?
+  razorpayKeySecret String?
+  isSynthetic       Boolean      @default(true) // Clearly marks test/demo tenant
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  goals             Goal[]
+  products          Product[]
+  orders            Order[]
+  auditEvents       AuditEvent[]
+}
+
+// 2. Customer
+model Customer {
+  id               String       @id @default(cuid())
+  name             String
+  email            String       @unique
+  phone            String
+  totalSpend       Float        @default(0.0)
+  orderCount       Int          @default(0)
+  lastActiveAt     DateTime     @default(now())
+  lastContactedAt  DateTime?
+  segment          String       @default("REGULAR") // DORMANT_HIGH_LTV, FAILED_CHECKOUT, PRICE_SENSITIVE, REGULAR
+  isSynthetic      Boolean      @default(true)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  orders           Order[]
+  payments         Payment[]
+}
+
+// 3. Product Catalog & Inventory
+model Product {
+  id           String      @id @default(cuid())
+  merchantId   String
+  name         String
+  sku          String      @unique
+  category     String
+  costPrice    Float       // COGS for margin computation
+  sellingPrice Float
+  inventory    Int         @default(100)
+  isSynthetic  Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  merchant     Merchant    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  orderItems   OrderItem[]
+}
+
+// 4. Order
+model Order {
+  id             String      @id @default(cuid())
+  merchantId     String
+  customerId     String
+  orderNumber    String      @unique
+  itemsPrice     Float
+  discountAmount Float       @default(0.0)
+  totalPrice     Float
+  paymentStatus  String      @default("PENDING") // PENDING, PAID, FAILED, REFUNDED
+  orderStatus    String      @default("PENDING") // PENDING, CONFIRMED, PROCESSING, SHIPPED, DELIVERED, CANCELLED
+  isSynthetic    Boolean     @default(true)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  merchant       Merchant    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  customer       Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  items          OrderItem[]
+  payments       Payment[]
+}
+
+model OrderItem {
+  id          String   @id @default(cuid())
+  orderId     String
+  productId   String
+  productName String
+  unitPrice   Float
+  costPrice   Float
+  quantity    Int
+
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+// 5. Payment Records (Simulated or Razorpay Test Mode)
+model Payment {
+  id                String    @id @default(cuid())
+  orderId           String?
+  customerId        String?
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  amount            Float
+  currency          String    @default("INR")
+  status            String    @default("created") // created, authorized, captured, failed
+  failureReason     String?
+  isSynthetic       Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  order             Order?    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customer          Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+}
+
+// 6. Merchant Goal
+model Goal {
+  id              String         @id @default(cuid())
+  merchantId      String
+  targetRevenue   Float          // e.g. 50000 (INR)
+  timeframeDays   Int            @default(30)
+  status          String         @default("ACTIVE") // ACTIVE, ACHIEVED, EXPIRED, CANCELLED
+  achievedRevenue Float          @default(0.0)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  merchant        Merchant       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  constraints     Constraint[]
+  opportunities   Opportunity[]
+}
+
+// 7. Hard Business Constraints
+model Constraint {
+  id             String   @id @default(cuid())
+  goalId         String
+  type           String   // MARGIN_FLOOR, DISCOUNT_CAP, INVENTORY_MIN, DUPLICATE_WINDOW_DAYS, SEGMENT_FILTER
+  operator       String   @default("GTE") // GTE, LTE, EQ
+  thresholdValue Float
+  unit           String   @default("PERCENT") // PERCENT, CURRENCY, UNITS, DAYS
+  isHard         Boolean  @default(true)      // Hard constraints are non-negotiable filters
+  createdAt      DateTime @default(now())
+
+  goal           Goal     @relation(fields: [goalId], references: [id], onDelete: Cascade)
+}
+
+// 8. Opportunity
+model Opportunity {
+  id                             String           @id @default(cuid())
+  goalId                         String
+  type                           String           // FAILED_PAYMENT_RECOVERY, WINBACK_CAMPAIGN, TARGETED_DISCOUNT
+  title                          String
+  description                    String
+  targetSegment                  String
+  eligibleCustomers              Int              // N
+  acceptanceProbability          Float            // P(accept) e.g. 0.20
+  incrementalRevenuePerCustomer  Float            // R e.g. 800
+  incentiveCostPerCustomer       Float            // C e.g. 50
+  expectedNetValue               Float            // Calculated deterministically: N * P * R - (N * P * C)
+  projectedMarginPct             Float
+  projectedDiscountPct           Float
+  inventoryImpact                Int              @default(0)
+  status                         String           @default("CANDIDATE") // CANDIDATE, ELIGIBLE, REJECTED
+  rejectionReasons               String?          // JSON array of strings if rejected by hard constraints
+  isRecommended                  Boolean          @default(false)
+  recommendationReason           String?
+  createdAt                      DateTime         @default(now())
+  updatedAt                      DateTime         @updatedAt
+
+  goal                           Goal             @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  actions                        CampaignAction[]
+}
+
+// 9. Campaign Action (Decision)
+model CampaignAction {
+  id                String        @id @default(cuid())
+  opportunityId     String
+  status            String        @default("PENDING_APPROVAL") // PENDING_APPROVAL, APPROVED, REJECTED_BY_MERCHANT, INITIATED, COMPLETED, FAILED
+  recommendedAt     DateTime      @default(now())
+  approvedAt        DateTime?
+  approvedBy        String?       // "merchant_admin"
+  decisionRationale String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  opportunity       Opportunity   @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  executions        Execution[]
+  measurement       Measurement?
+}
+
+// 10. Execution
+model Execution {
+  id                   String         @id @default(cuid())
+  actionId             String
+  gateway              String         @default("RAZORPAY_TEST")
+  provider             String         @default("RAZORPAY_SIMULATED") // RAZORPAY_SIMULATED, RAZORPAY, RAZORPAY_TEST
+  batchId              String?        // Legacy batch reference (use providerReferenceId)
+  providerReferenceId  String?        // Canonical Razorpay reference (payment link ID, order ID, etc.)
+  status               String         @default("INITIATED") // INITIATED, SUCCESS, FAILED, RETRYABLE_ERROR
+  linksCreated         Int            @default(0)
+  payloadSent          String?        // JSON payload sent to gateway
+  responseReceived     String?        // JSON response from gateway
+  errorMessage         String?
+  errorCode            String?        // Structured error code (e.g. DEMO_GATEWAY_TIMEOUT)
+  isSimulated          Boolean        @default(true)
+  executedAt           DateTime       @default(now())
+
+  action               CampaignAction @relation(fields: [actionId], references: [id], onDelete: Cascade)
+}
+
+// 11. Measurement
+model Measurement {
+  id                 String         @id @default(cuid())
+  actionId           String         @unique
+  predictedRevenue   Float
+  actualRevenue      Float          @default(0.0)
+  predictedNetValue  Float
+  actualNetValue     Float          @default(0.0)
+  conversionsCount   Int            @default(0)
+  goalAttainmentRate Float          @default(0.0) // percentage e.g. 114%
+  measuredAt         DateTime       @default(now())
+
+  action             CampaignAction @relation(fields: [actionId], references: [id], onDelete: Cascade)
+}
+
+// 12. Webhook Event (for idempotent Razorpay webhook processing)
+model WebhookEvent {
+  id              String    @id @default(cuid())
+  provider        String    @default("RAZORPAY") // RAZORPAY
+  eventId         String    @unique               // Razorpay webhook event ID (idempotency key)
+  eventType       String                           // payment.captured, payment.failed, payment_link.paid, etc.
+  payload         String                           // Raw JSON payload (stored for audit)
+  signature       String?                          // Razorpay-Signature header value
+  verified        Boolean   @default(false)        // Whether signature was verified
+  processed       Boolean   @default(false)        // Whether business logic was applied
+  processingError String?                          // Error message if processing failed
+  executionId     String?                          // Linked Revenue Lift execution ID if mapped
+  actionId        String?                          // Linked campaign action ID
+  receivedAt      DateTime  @default(now())
+  processedAt     DateTime?
+}
+
+// 13. Audit Event
+model AuditEvent {
+  id          String    @id @default(cuid())
+  merchantId  String?
+  timestamp   DateTime  @default(now())
+  actor       String    @default("SYSTEM") // MERCHANT, AGENT, SYSTEM
+  eventType   String    // GOAL_CREATED, CONSTRAINTS_LOCKED, OPPORTUNITY_EVALUATED, OPPORTUNITY_REJECTED, ACTION_RECOMMENDED, MERCHANT_APPROVED, EXECUTION_INITIATED, EXECUTION_SUCCESS, EXECUTION_FAILED, MEASUREMENT_RECORDED
+  entityType  String?   // Goal, Opportunity, CampaignAction, Execution, Measurement
+  entityId    String?
+  summary     String
+  detailsJson String?
+
+  merchant    Merchant? @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+}
