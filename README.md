@@ -335,7 +335,6 @@ npm run build
 
 ## 22. Future Roadmap
 
-- **Autonomous Multi-Armed Bandits (MAB):** Real-time Bayesian exploration/exploitation across discount percentages.
-- **Predictive LTV Forecasting:** Neural survival models for dynamic repeat purchase prediction.
+- 
 - **Automated WhatsApp Checkout Links:** Razorpay Payment Links dispatched via official WhatsApp Business API.
 - **Multi-Tenant OAuth:** Razorpay Partner App OAuth onboarding for zero-touch merchant installation.
